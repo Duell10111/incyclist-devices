@@ -4,6 +4,8 @@ import { SerialInterface, SerialPortProvider } from '../../index.js';
 import { BindingInterface  } from '@serialport/bindings-interface'
 import { resolveNextTick } from '../../../utils/utils.js';
 import { Gender, User } from '../../../types/user.js';
+import { buildFrame, ElexFrameParser, ElexMessage, ElexSubType } from '../elex/framing.js';
+import { buildAuthPayload } from '../elex/handshake.js';
 
 const CRLF = '\r\n'; 
 
@@ -108,6 +110,27 @@ export class KettlerRacerSimulator {
     heartrate:number=0;
     time:number=4; 
     energy:number =0
+
+    // Racer S generation: starts in the binary Elex protocol and needs the handshake before text commands
+    elex: boolean = false
+    // classic bikes always speak text; Elex bikes only after the handshake (and stay in text mode afterwards)
+    textMode: boolean = true
+    // the first text command after switching to text mode is answered with ERROR
+    errorOnNextText: boolean = false
+    elexId: string = 'EA10S1201'
+    elexFirmware: number = 0x1201
+    resetCount: number = 0
+
+    static createElex(): KettlerRacerSimulator {
+        const simulator = new KettlerRacerSimulator()
+        simulator.elex = true
+        simulator.textMode = false
+        simulator.identifier = 'EA10S1801'
+        simulator.version = '1801'
+        simulator.bikeType = 'EA10S'
+        simulator.ifVersion = 'RACER S'
+        return simulator
+    }
 }
 
 
@@ -118,6 +141,7 @@ export class KettlerRacerMockBinding extends MockPortBinding {
     prevCommand: Buffer
     simulator: KettlerRacerSimulator;
     handlers: Map<string,(payload:string)=>void>
+    elexParser = new ElexFrameParser()
     // readonly port: MockPortInternal 
     // isOpen: boolean
     // writeOperation: null | Promise<void>
@@ -185,9 +209,38 @@ export class KettlerRacerMockBinding extends MockPortBinding {
           return this.writeOperation        
     }
 
+    processElexData(buffer: Buffer) {
+        // in binary mode, text is ignored
+        for (const frame of this.elexParser.feed(buffer)) {
+            const {messageId,payload} = frame
+            const answer = (data:Buffer|number[]) => this.emitData(buildFrame(messageId, ElexSubType.Answer, data))
+
+            switch (messageId) {
+                case ElexMessage.Authentication:
+                    if (payload.length===18 && buildAuthPayload(payload.subarray(0,2)).equals(payload))
+                        answer(Buffer.alloc(18,7))
+                    break
+                case ElexMessage.DeviceId:
+                    answer(Buffer.from(this.simulator.elexId,'latin1'))
+                    break
+                case ElexMessage.FirmwareVersion:
+                    answer([this.simulator.elexFirmware>>8, this.simulator.elexFirmware & 0xff])
+                    break
+                case ElexMessage.SwitchToTextMode:
+                    this.simulator.textMode = true
+                    this.simulator.errorOnNextText = true
+                    break
+            }
+        }
+    }
+
     async processData(buffer: Buffer) { 
 
-        
+        if (this.simulator.elex && !this.simulator.textMode) {
+            this.processElexData(buffer)
+            return
+        }
+
         // simplified model
         const data = buffer.toString()
         const lines = data.split(CRLF)
@@ -206,7 +259,11 @@ export class KettlerRacerMockBinding extends MockPortBinding {
                 return;
 
             const handler = this.handlers.get(cmd)
-            if (handler) {
+            if (this.simulator.errorOnNextText) {
+                this.simulator.errorOnNextText = false
+                this.emitData('ERROR'+CRLF)
+            }
+            else if (handler) {
                 handler(payload)
             }
             else {
@@ -240,6 +297,7 @@ export class KettlerRacerMockBinding extends MockPortBinding {
     }
 
     onReset(_payload:string) {
+        this.simulator.resetCount++
         this.sendResponse('ACK')
     }
     onGetIdentifier(_payload:string) {

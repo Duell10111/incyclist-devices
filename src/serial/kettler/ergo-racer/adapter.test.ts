@@ -1,7 +1,7 @@
 import KettlerRacerAdapter from './adapter';
 import { EventLogger } from 'gd-eventlog';
 import {MockLogger} from '../../../../test/logger'
-import { KettlerRacerMock, KettlerRacerMockImpl } from './mock';
+import { KettlerRacerMock, KettlerRacerMockImpl, KettlerRacerSimulator } from './mock';
 import { SerialPortProvider } from '../..';
 import { MockBinding } from '@serialport/binding-mock';
 
@@ -50,6 +50,22 @@ describe( 'ErgoRacerAdapter', () => {
     })
 
 
+    describe( 'transformData',()=>{
+
+        test('first status: device distance of an earlier session is not counted',()=>{
+            const ad = new KettlerRacerAdapter( {interface:'serial',name:'test',port:'COM1', protocol:'Kettler Racer'});
+            const bikeData = {cadence:75, distance:61900, speed:26.6, power:65, heartrate:0, time:36, energy:12, requestedPower:70}
+
+            const first = ad.transformData( ad.mapData(bikeData), bikeData)
+            expect(first.distance).toBe(0)
+
+            const next = {...bikeData, distance:62000}
+            const second = ad.transformData( ad.mapData(next), next)
+            expect(second.distance).toBe(100)
+        })
+
+    })
+
     describe( 'mapData',()=>{
 
         test('initial data',()=>{
@@ -91,6 +107,26 @@ describe( 'ErgoRacerAdapter', () => {
         test('check',async ()=>{
             const available = await ad.check()
             expect(available).toBeTruthy()
+        })
+
+        test('classic bike: no RS when closing',async ()=>{
+            const simulator = new KettlerRacerSimulator()
+            KettlerRacerMockImpl.getInstance().setSimulator('COM1',simulator)
+
+            expect(await ad.check()).toBeTruthy()
+            await ad.close()
+            expect(simulator.resetCount).toBe(0)
+        })
+
+        test('Racer S (Elex): check after handshake, RS when closing',async ()=>{
+            const simulator = KettlerRacerSimulator.createElex()
+            KettlerRacerMockImpl.getInstance().setSimulator('COM1',simulator)
+
+            expect(await ad.check()).toBeTruthy()
+            expect(ad._getComms().isElexDevice()).toBe(true)
+
+            await ad.close()
+            expect(simulator.resetCount).toBe(1)
         })
     
     })

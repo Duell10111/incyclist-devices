@@ -404,6 +404,8 @@ export default class KettlerRacerAdapter   extends SerialIncyclistDevice<DeviceP
         this.logEvent({message:'start()'});        
         
         const info = {} as any
+        // CM resets the bike's counters - take the distance baseline from the first status of this session
+        this.prevDistance = undefined
 
         await this.waitForOpened(true);
         
@@ -484,6 +486,7 @@ export default class KettlerRacerAdapter   extends SerialIncyclistDevice<DeviceP
                     this.iv=undefined
                 }
 
+                await this.endSession();
                 await this.waitForClosed();
                 this.logEvent({message:'stop request completed'});        
                 this.paused=undefined;
@@ -514,7 +517,8 @@ export default class KettlerRacerAdapter   extends SerialIncyclistDevice<DeviceP
     transformData( internalData: IncyclistBikeData, bikeData:KettlerBikeData): IncyclistAdapterData {
         let data = {} as IncyclistAdapterData;
 
-        const prevDistance =this.prevDistance || 0;
+        // first status after connecting: the device counter may still contain the distance of an earlier session
+        const prevDistance = this.prevDistance ?? internalData.distanceInternal;
         let distance = internalData.distanceInternal - prevDistance
         if (distance<0) distance = internalData.distanceInternal<100 ? internalData.distanceInternal : 0;
 
@@ -692,7 +696,24 @@ export default class KettlerRacerAdapter   extends SerialIncyclistDevice<DeviceP
     }
 
     async close(): Promise<boolean> {
+        await this.endSession()
         return await this.waitForClosed()
+    }
+
+    /**
+     * Bikes of the Racer S generation (Elex handshake) stay in PC mode after the connection is closed and then
+     * refuse new connections until they are put back to their start screen. Sending RS before closing leaves
+     * PC mode (as Kettler's own software does at the end of a training).
+     */
+    protected async endSession(): Promise<void> {
+        if (!this.comms?.isConnected() || !this.comms.isElexDevice())
+            return
+        try {
+            await this.send('reset', 'RS', 1500)
+        }
+        catch (err) {
+            this.logEvent({message:'could not reset bike before closing', error:err.message})
+        }
     }
 
 

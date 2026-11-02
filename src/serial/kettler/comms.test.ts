@@ -65,7 +65,9 @@ describe('KettlerSerialComms',()=>{
         })
     
         test('port can be opened',async ()=>{
-            comms = new KettlerSerialComms<Command>({interface:'serial',port:'COM1',logger:new EventLogger('KettlerTest')})
+            // the mock port never answers: text probe and Elex handshake run into their (shortened) timeouts
+            const handshakeTimeouts = {flush:10, textProbe:50, frame:50, text:50}
+            comms = new KettlerSerialComms<Command>({interface:'serial',port:'COM1',logger:new EventLogger('KettlerTest'), settings:{handshakeTimeouts}})
             const opened = await comms.open()
             expect(opened).toBeTruthy()
             expect(comms.isConnected()).toBeTruthy()

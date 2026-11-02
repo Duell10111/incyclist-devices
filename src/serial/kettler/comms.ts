@@ -4,6 +4,7 @@ import { Command } from "./types.js";
 import { EventEmitter } from "node:events";
 import { SerialInterface } from "../index.js";
 import { ReadlineParser } from '@serialport/parser-readline'
+import { ElexHandshakeResult, prepareConnection } from "./elex/handshake.js";
 
 const DEFAULT_RCV_TIMEOUT = 1500;
 const DEFAULT_OPEN_TIMEOUT = 3000;
@@ -76,6 +77,7 @@ export default class KettlerSerialComms< T extends Command > extends EventEmitte
     private currentTimeout: NodeJS.Timeout;
     private serial: SerialInterface;
     private openPromise: Promise<boolean>
+    private handshake: ElexHandshakeResult
   
     constructor( opts: SerialCommsProps)  {     
         super();
@@ -137,6 +139,18 @@ export default class KettlerSerialComms< T extends Command > extends EventEmitte
 
     getSerialInterface() {
         return this.serial
+    }
+
+    /**
+     * true if the bike needed the binary Elex handshake (Racer S generation). These bikes need to be
+     * reset (RS) before the connection is closed, otherwise they refuse the next connection.
+     */
+    isElexDevice(): boolean {
+        return this.handshake?.mode === 'elex'
+    }
+
+    getHandshakeResult(): ElexHandshakeResult {
+        return this.handshake
     }
 
     onPortOpen() {
@@ -229,6 +243,14 @@ export default class KettlerSerialComms< T extends Command > extends EventEmitte
                 const port = await this.serial.openPort(this.port)
                 
                 if (port) {
+                    if (this.settings.elexHandshake!==false) {
+                        // the handshake has its own timeouts
+                        this.stopCurrentTimeoutCheck()
+                        this.handshake = await prepareConnection(port, {logger:this.logger, timeouts:this.settings.handshakeTimeouts})
+                        this.logger.logEvent({message:'connection prepared', port:this.getPort(), mode:this.handshake.mode})
+                        // mode 'none': continue anyway, as before the handshake was introduced
+                    }
+
                     this.onPortOpen();
     
                     this.sp = port;
